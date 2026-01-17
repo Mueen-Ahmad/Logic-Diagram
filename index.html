@@ -16,7 +16,8 @@
         }
         .wire-active { stroke-dasharray: 8; animation: flow 1s linear infinite; stroke: #3b82f6; stroke-width: 4; }
         @keyframes flow { to { stroke-dashoffset: -16; } }
-        .gate-node { transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+        .gate-node { transition: all 0.3s ease; cursor: grab; }
+        .gate-node:active { cursor: grabbing; }
         .loading-shimmer {
             background: linear-gradient(90deg, #eff6ff 25%, #dbeafe 50%, #eff6ff 75%);
             background-size: 200% 100%;
@@ -47,15 +48,15 @@
             const [isLoading, setIsLoading] = useState(false);
             const [errorMsg, setErrorMsg] = useState("");
             
-            // local storage theke key neya ba default empty
             const [userApiKey, setUserApiKey] = useState(localStorage.getItem('gemini_api_key') || "");
             const [showKeyModal, setShowKeyModal] = useState(!localStorage.getItem('gemini_api_key'));
 
             const canvasRef = useRef(null);
 
             const saveApiKey = (key) => {
-                localStorage.setItem('gemini_api_key', key);
-                setUserApiKey(key);
+                const trimmedKey = key.trim();
+                localStorage.setItem('gemini_api_key', trimmedKey);
+                setUserApiKey(trimmedKey);
                 setShowKeyModal(false);
                 setErrorMsg("");
             };
@@ -72,16 +73,23 @@
                     if (node.type === 'SWITCH') {
                         newResults[nodeId] = !!node.state;
                     } else {
-                        const incoming = connections
-                            .filter(c => c.toId === nodeId)
-                            .map(c => evaluate(c.fromId));
+                        const incomingConnections = connections.filter(c => c.toId === nodeId);
+                        const incomingValues = incomingConnections.map(c => evaluate(c.fromId));
 
                         let res = false;
                         switch (node.type) {
-                            case 'AND': res = incoming.length >= 2 && incoming.every(v => v); break;
-                            case 'OR': res = incoming.length > 0 && incoming.some(v => v); break;
-                            case 'NOT': res = incoming.length > 0 ? !incoming[0] : false; break;
-                            case 'BULB': res = incoming.length > 0 ? incoming[0] : false; break;
+                            case 'AND': 
+                                res = incomingValues.length >= 2 && incomingValues.every(v => v === true); 
+                                break;
+                            case 'OR': 
+                                res = incomingValues.length > 0 && incomingValues.some(v => v === true); 
+                                break;
+                            case 'NOT': 
+                                res = incomingValues.length > 0 ? !incomingValues[0] : false; 
+                                break;
+                            case 'BULB': 
+                                res = incomingValues.length > 0 ? incomingValues[0] : false; 
+                                break;
                         }
                         newResults[nodeId] = res;
                     }
@@ -105,16 +113,18 @@
                 setIsLoading(true);
                 setErrorMsg("");
 
-                const systemPrompt = `You are a Digital Logic Circuit Architect. 
-                Convert the user's boolean expression into a JSON object for a circuit simulator.
-                Available nodes: AND, OR, NOT, SWITCH, BULB.
+                const systemPrompt = `You are a Logic Circuit Designer. 
+                Task: Convert boolean expressions into a JSON circuit map.
+                Available nodes: 'SWITCH' (inputs), 'AND', 'OR', 'NOT', 'BULB' (final output).
+                
                 Rules:
-                1. Create SWITCH nodes for inputs (A, B, C etc).
-                2. Use intermediate gates.
-                3. Connect to a single BULB.
-                4. Output valid JSON only with 'nodes' and 'connections'.`;
+                1. Each unique variable (A, B, C...) must be a separate SWITCH node.
+                2. Use logical priority: NOT (!) first, then AND (.), then OR (+).
+                3. Position nodes from left to right. SWITCH nodes at x=50, gates in middle (x=300-500), BULB at x=800.
+                4. Output ONLY valid JSON with 'nodes' [id, type, label, x, y] and 'connections' [id, fromId, toId].
+                5. Ensure the logic exactly matches the expression. Don't simplify unnecessarily.`;
 
-                const userPrompt = `Create a circuit for: ${equation}`;
+                const userPrompt = `Create a realistic circuit diagram for the expression: ${equation}`;
 
                 const fetchCircuit = async (retries = 0) => {
                     try {
@@ -124,34 +134,30 @@
                             body: JSON.stringify({
                                 contents: [{ parts: [{ text: userPrompt }] }],
                                 systemInstruction: { parts: [{ text: systemPrompt }] },
-                                generationConfig: { responseMimeType: "application/json" }
+                                generationConfig: { 
+                                    responseMimeType: "application/json",
+                                    temperature: 0.2 // logic-er jonno low temperature bhalo
+                                }
                             })
                         });
 
-                        if (!response.ok) {
-                            if (response.status === 400 || response.status === 401) {
-                                throw new Error("আপনার API Key-টি সঠিক নয়। অনুগ্রহ করে নতুন করে সেট করুন।");
-                            }
-                            throw new Error('সার্ভারে সমস্যা হচ্ছে। দয়া করে কিছুক্ষণ পর চেষ্টা করুন।');
-                        }
+                        if (!response.ok) throw new Error("API Key ভুল অথবা কোটা শেষ হয়ে গেছে।");
 
                         const data = await response.json();
                         const rawJson = data.candidates?.[0]?.content?.parts?.[0]?.text;
                         const parsed = JSON.parse(rawJson);
 
                         if (parsed.nodes && parsed.connections) {
-                            const nodesWithState = parsed.nodes.map(n => ({
-                                ...n,
-                                state: n.type === 'SWITCH' ? false : undefined
-                            }));
-                            setNodes(nodesWithState);
+                            setNodes(parsed.nodes.map(n => ({ ...n, state: n.type === 'SWITCH' ? false : undefined })));
                             setConnections(parsed.connections);
+                        } else {
+                            throw new Error("AI সঠিক ডাটা ফরম্যাট পাঠাতে পারেনি।");
                         }
                     } catch (err) {
                         if (retries < 2) {
                             setTimeout(() => fetchCircuit(retries + 1), 1000);
                         } else {
-                            setErrorMsg(err.message || "AI সার্কিট তৈরি করতে পারছে না।");
+                            setErrorMsg(err.message || "সার্কিট তৈরি করা সম্ভব হচ্ছে না।");
                         }
                     } finally {
                         setIsLoading(false);
@@ -167,13 +173,14 @@
                     {showKeyModal && (
                         <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
                             <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl border border-slate-200">
-                                <h2 className="text-2xl font-black mb-2">API Key প্রয়োজন</h2>
-                                <p className="text-slate-500 text-sm mb-6">Vercel-এ এটি ব্যবহারের জন্য আপনার একটি Gemini API Key দরকার। এটি একদম ফ্রি।</p>
+                                <h2 className="text-2xl font-black mb-2">API Key সেট করুন</h2>
+                                <p className="text-slate-500 text-sm mb-6">আপনার Gemini API Key টি এখানে দিন। এটি না দিলে ড্রয়িং ফিচার কাজ করবে না।</p>
                                 <input 
                                     id="api-input"
                                     type="password"
+                                    defaultValue={userApiKey}
                                     className="w-full px-4 py-3 bg-slate-100 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-indigo-500 mb-4 font-mono"
-                                    placeholder="AI Studio থেকে Key কপি করে এখানে দিন..."
+                                    placeholder="Paste your key here..."
                                 />
                                 <div className="flex gap-3">
                                     <button 
@@ -183,7 +190,7 @@
                                         সেভ করুন
                                     </button>
                                     <a href="https://aistudio.google.com/app/apikey" target="_blank" className="px-4 py-3 bg-slate-100 text-slate-600 rounded-xl font-bold flex items-center justify-center hover:bg-slate-200 transition-colors">
-                                        কিভাবে পাবো?
+                                        কী (Key) নিন
                                     </a>
                                 </div>
                             </div>
@@ -191,13 +198,13 @@
                     )}
 
                     <header className="h-20 bg-white border-b flex items-center justify-between px-8 shadow-sm z-20">
-                        <div className="flex items-center gap-4">
-                            <div className="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center text-white font-bold shadow-lg shadow-indigo-100 cursor-pointer" onClick={() => setShowKeyModal(true)}>
+                        <div className="flex items-center gap-4 cursor-pointer" onClick={() => setShowKeyModal(true)}>
+                            <div className="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center text-white font-bold shadow-lg shadow-indigo-100">
                                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
                             </div>
                             <div>
                                 <h1 className="font-black text-xl tracking-tight uppercase">Logic Pro AI</h1>
-                                <p className="text-[10px] text-indigo-500 font-bold uppercase tracking-[0.2em]">Gemini 2.5 Intelligence</p>
+                                <p className="text-[10px] text-indigo-500 font-bold uppercase tracking-[0.2em]">Smart Circuit Designer</p>
                             </div>
                         </div>
 
@@ -206,7 +213,7 @@
                                 value={equation}
                                 onChange={(e) => setEquation(e.target.value)}
                                 className="flex-1 px-4 bg-transparent outline-none font-mono text-sm font-bold text-slate-700"
-                                placeholder="Likun: (A + B) . !C"
+                                placeholder="উদাহরণ: (A . B) + !C"
                                 onKeyDown={(e) => e.key === 'Enter' && generateWithAI()}
                             />
                             <button 
@@ -215,7 +222,7 @@
                                 className={`px-8 py-2.5 rounded-xl font-bold text-sm transition-all shadow-md flex items-center gap-2 ${isLoading ? 'bg-slate-300 text-slate-500' : 'bg-indigo-600 text-white hover:bg-indigo-700 active:scale-95'}`}
                             >
                                 {isLoading ? (
-                                    <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> এআই সাজাচ্ছে...</>
+                                    <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> তৈরি হচ্ছে...</>
                                 ) : (
                                     'ড্র করো'
                                 )}
@@ -227,17 +234,12 @@
                         {isLoading && <div className="absolute inset-0 z-30 loading-shimmer opacity-20 pointer-events-none"></div>}
                         
                         {errorMsg && (
-                            <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-50 text-red-600 px-4 py-2 rounded-lg border border-red-100 font-bold text-sm z-40">
-                                {errorMsg}
+                            <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-50 text-red-600 px-6 py-3 rounded-2xl border border-red-200 shadow-xl font-bold text-sm z-40 animate-bounce">
+                                ⚠️ {errorMsg}
                             </div>
                         )}
 
                         <svg className="absolute inset-0 w-full h-full pointer-events-none">
-                            <defs>
-                                <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="0" refY="3.5" orient="auto">
-                                    <polygon points="0 0, 10 3.5, 0 7" fill="#cbd5e1" />
-                                </marker>
-                            </defs>
                             {connections.map(c => {
                                 const fn = nodes.find(n => n.id === c.fromId);
                                 const tn = nodes.find(n => n.id === c.toId);
@@ -246,11 +248,11 @@
                                 return (
                                     <path 
                                         key={c.id} 
-                                        d={`M ${fn.x + 112} ${fn.y + 40} C ${fn.x + 160} ${fn.y + 40}, ${tn.x - 60} ${tn.y + 40}, ${tn.x} ${tn.y + 40}`} 
+                                        d={`M ${fn.x + 112} ${fn.y + 40} C ${fn.x + 180} ${fn.y + 40}, ${tn.x - 80} ${tn.y + 40}, ${tn.x} ${tn.y + 40}`} 
                                         fill="none" 
-                                        stroke={active ? '#3b82f6' : '#e2e8f0'} 
+                                        stroke={active ? '#3b82f6' : '#cbd5e1'} 
                                         strokeWidth={active ? 4 : 2}
-                                        className={active ? 'wire-active' : 'transition-all duration-500'}
+                                        className={active ? 'wire-active' : 'transition-all duration-300'}
                                     />
                                 );
                             })}
@@ -260,46 +262,44 @@
                             <div 
                                 key={node.id} 
                                 style={{ left: node.x, top: node.y }}
-                                className={`gate-node absolute w-28 h-20 bg-white border-2 rounded-2xl shadow-sm flex flex-col items-center justify-center group ${results[node.id] ? 'border-indigo-500 ring-4 ring-indigo-50' : 'border-slate-100 hover:border-slate-300'}`}
+                                className={`gate-node absolute w-28 h-20 bg-white border-2 rounded-2xl shadow-sm flex flex-col items-center justify-center group ${results[node.id] ? 'border-indigo-500 ring-4 ring-indigo-100 shadow-indigo-100' : 'border-slate-100'}`}
                             >
-                                <div className="flex flex-col items-center">
-                                    {node.type === 'SWITCH' ? (
-                                        <div className="flex flex-col items-center gap-2">
-                                            <button 
-                                                onClick={() => setNodes(nodes.map(n => n.id === node.id ? {...n, state: !n.state} : n))}
-                                                className={`w-12 h-6 rounded-full transition-all relative shadow-inner ${node.state ? 'bg-indigo-600' : 'bg-slate-200'}`}
-                                            >
-                                                <div className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow-md transition-all ${node.state ? 'left-7' : 'left-1'}`}></div>
-                                            </button>
-                                            <span className="text-[11px] font-black text-indigo-900 bg-indigo-50 px-2 py-0.5 rounded uppercase">{node.label}</span>
-                                        </div>
-                                    ) : node.type === 'BULB' ? (
-                                        <div className="flex flex-col items-center gap-1">
-                                            <div className={`w-9 h-9 rounded-full border-4 transition-all duration-300 ${results[node.id] ? 'bg-yellow-400 border-yellow-500 shadow-[0_0_30px_rgba(234,179,8,0.6)]' : 'bg-slate-50 border-slate-100'}`} />
-                                            <span className="text-[9px] font-black uppercase text-slate-400">আউটপুট</span>
-                                        </div>
-                                    ) : (
-                                        <div className="flex flex-col items-center">
-                                            <svg viewBox="0 0 50 50" className="h-10 drop-shadow-sm">
-                                                <path d={GATE_CONFIGS[node.type].d} fill="none" stroke={GATE_CONFIGS[node.type].color} strokeWidth="3.5" strokeLinecap="round" />
-                                            </svg>
-                                            <span className="text-[9px] font-black uppercase text-slate-400 mt-1">{node.type}</span>
-                                        </div>
-                                    )}
-                                </div>
+                                {node.type === 'SWITCH' ? (
+                                    <div className="flex flex-col items-center gap-2">
+                                        <button 
+                                            onClick={() => setNodes(nodes.map(n => n.id === node.id ? {...n, state: !n.state} : n))}
+                                            className={`w-10 h-5 rounded-full transition-all relative ${node.state ? 'bg-indigo-600' : 'bg-slate-200'}`}
+                                        >
+                                            <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${node.state ? 'left-5.5' : 'left-0.5'}`}></div>
+                                        </button>
+                                        <span className="text-[11px] font-black text-indigo-900 bg-indigo-50 px-2 rounded">{node.label}</span>
+                                    </div>
+                                ) : node.type === 'BULB' ? (
+                                    <div className="flex flex-col items-center gap-1">
+                                        <div className={`w-8 h-8 rounded-full border-2 transition-all duration-300 ${results[node.id] ? 'bg-yellow-400 border-yellow-500 shadow-[0_0_20px_rgba(234,179,8,0.5)]' : 'bg-slate-50 border-slate-200'}`} />
+                                        <span className="text-[8px] font-bold text-slate-400 uppercase">Output</span>
+                                    </div>
+                                ) : (
+                                    <div className="flex flex-col items-center">
+                                        <svg viewBox="0 0 50 50" className="h-8">
+                                            <path d={GATE_CONFIGS[node.type].d} fill="none" stroke={GATE_CONFIGS[node.type].color} strokeWidth="3" />
+                                        </svg>
+                                        <span className="text-[9px] font-bold text-slate-400 mt-1">{node.type}</span>
+                                    </div>
+                                )}
                             </div>
                         ))}
                     </main>
 
-                    <footer className="h-12 bg-slate-900 text-white flex items-center px-8 text-[11px] font-bold gap-8 uppercase tracking-widest">
+                    <footer className="h-10 bg-slate-900 text-white flex items-center px-8 text-[10px] font-bold gap-6 uppercase tracking-wider">
                         <div className="flex gap-4">
-                            <span className="text-indigo-400 flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse"></div> Gemini এআই ইঞ্জিন সচল</span>
-                            <span className="text-slate-500">|</span>
+                            <span className="text-indigo-400">● AI Engine Ready</span>
+                            <span className="text-slate-700">|</span>
                             <span>(.) AND</span>
                             <span>(+) OR</span>
                             <span>(!) NOT</span>
                         </div>
-                        <div className="ml-auto text-slate-500">Logic Designer Pro v3.0 - Intelligent Edition</div>
+                        <div className="ml-auto text-slate-500">Logic Designer AI v3.5</div>
                     </footer>
                 </div>
             );
