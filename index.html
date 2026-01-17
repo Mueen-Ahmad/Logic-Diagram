@@ -1,339 +1,210 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Settings, Play, Trash2, Plus, Zap, MousePointer2, Move, Share2, Download } from 'lucide-react';
-
-/**
- * Logic Gate Configurations and Shapes
- */
-const GATE_TYPES = {
-  AND: { inputs: 2, color: '#3b82f6', label: 'AND' },
-  OR: { inputs: 2, color: '#10b981', label: 'OR' },
-  NOT: { inputs: 1, color: '#ef4444', label: 'NOT' },
-  XOR: { inputs: 2, color: '#8b5cf6', label: 'XOR' },
-  NAND: { inputs: 2, color: '#f59e0b', label: 'NAND' },
-  SWITCH: { inputs: 0, color: '#64748b', label: 'IN' },
-  BULB: { inputs: 1, color: '#eab308', label: 'OUT' }
-};
-
-const App = () => {
-  const [nodes, setNodes] = useState([]);
-  const [connections, setConnections] = useState([]);
-  const [draggingNode, setDraggingNode] = useState(null);
-  const [activeWire, setActiveWire] = useState(null);
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
-  const canvasRef = useRef(null);
-
-  // Simulation State
-  const [simulationResults, setSimulationResults] = useState({});
-
-  /**
-   * Logic Simulation Logic
-   */
-  const runSimulation = useCallback(() => {
-    const results = {};
-    const processed = new Set();
-
-    const evaluate = (nodeId) => {
-      if (processed.has(nodeId)) return results[nodeId];
-      
-      const node = nodes.find(n => n.id === nodeId);
-      if (!node) return false;
-
-      if (node.type === 'SWITCH') {
-        results[nodeId] = !!node.state;
-      } else {
-        const incoming = connections
-          .filter(conn => conn.toId === nodeId)
-          .map(conn => evaluate(conn.fromId));
-
-        let res = false;
-        switch (node.type) {
-          case 'AND': res = incoming.length >= 2 && incoming.every(v => v); break;
-          case 'OR': res = incoming.some(v => v); break;
-          case 'NOT': res = incoming.length > 0 ? !incoming[0] : false; break;
-          case 'NAND': res = incoming.length >= 2 && !incoming.every(v => v); break;
-          case 'XOR': res = incoming.filter(v => v).length % 2 !== 0; break;
-          case 'BULB': res = incoming.length > 0 ? incoming[0] : false; break;
-          default: res = false;
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Logic Designer Pro - Solver Edition</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #f8fafc; }
+        .canvas-grid {
+            background-image: radial-gradient(#cbd5e1 1px, transparent 1px);
+            background-size: 25px 25px;
         }
-        results[nodeId] = res;
-      }
-      
-      processed.add(nodeId);
-      return results[nodeId];
-    };
+        .wire-active { stroke-dasharray: 8; animation: flow 1s linear infinite; }
+        @keyframes flow { to { stroke-dashoffset: -16; } }
+        .gate-node { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
 
-    nodes.forEach(node => evaluate(node.id));
-    setSimulationResults(results);
-  }, [nodes, connections]);
+    <script type="text/babel">
+        const { useState, useRef, useEffect, useCallback } = React;
 
-  useEffect(() => {
-    runSimulation();
-  }, [nodes, connections, runSimulation]);
+        const GATE_CONFIGS = {
+            AND: { color: '#3b82f6', d: "M 5 10 Q 25 10 35 25 Q 25 40 5 40 Z" },
+            OR: { color: '#10b981', d: "M 5 10 Q 20 10 35 25 Q 20 40 5 40 Q 12 25 5 10 Z" },
+            NOT: { color: '#ef4444', d: "M 5 10 L 30 25 L 5 40 Z" },
+            SWITCH: { color: '#64748b', special: 'switch' },
+            BULB: { color: '#eab308', special: 'bulb' }
+        };
 
-  const addNode = (type) => {
-    const newNode = {
-      id: `node-${Date.now()}`,
-      type,
-      x: 100,
-      y: 100,
-      state: false
-    };
-    setNodes([...nodes, newNode]);
-  };
+        const App = () => {
+            const [nodes, setNodes] = useState([]);
+            const [connections, setConnections] = useState([]);
+            const [results, setResults] = useState({});
+            const [equation, setEquation] = useState("A.B + !A");
+            const canvasRef = useRef(null);
 
-  const handleMouseDown = (e, node) => {
-    if (e.target.dataset.port) return;
-    setDraggingNode(node.id);
-    const rect = e.currentTarget.getBoundingClientRect();
-    setOffset({
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top
-    });
-  };
+            // Simulation Logic
+            const runSimulation = useCallback(() => {
+                const newResults = {};
+                const processed = new Set();
 
-  const handleMouseMove = (e) => {
-    if (draggingNode) {
-      const rect = canvasRef.current.getBoundingClientRect();
-      setNodes(prev => prev.map(n => 
-        n.id === draggingNode 
-          ? { ...n, x: e.clientX - rect.left - offset.x, y: e.clientY - rect.top - offset.y } 
-          : n
-      ));
-    }
-    if (activeWire) {
-      const rect = canvasRef.current.getBoundingClientRect();
-      setActiveWire(prev => ({ ...prev, endX: e.clientX - rect.left, endY: e.clientY - rect.top }));
-    }
-  };
+                const evaluate = (nodeId) => {
+                    if (processed.has(nodeId)) return newResults[nodeId];
+                    const node = nodes.find(n => n.id === nodeId);
+                    if (!node) return false;
 
-  const handleMouseUp = () => {
-    setDraggingNode(null);
-    setActiveWire(null);
-  };
+                    if (node.type === 'SWITCH') {
+                        newResults[nodeId] = !!node.state;
+                    } else {
+                        const incoming = connections
+                            .filter(c => c.toId === nodeId)
+                            .map(c => evaluate(c.fromId));
 
-  const startWire = (e, fromId) => {
-    e.stopPropagation();
-    const rect = canvasRef.current.getBoundingClientRect();
-    setActiveWire({
-      fromId,
-      startX: e.clientX - rect.left,
-      startY: e.clientY - rect.top,
-      endX: e.clientX - rect.left,
-      endY: e.clientY - rect.top
-    });
-  };
+                        let res = false;
+                        switch (node.type) {
+                            case 'AND': res = incoming.length >= 2 && incoming.every(v => v); break;
+                            case 'OR': res = incoming.length > 0 && incoming.some(v => v); break;
+                            case 'NOT': res = incoming.length > 0 ? !incoming[0] : false; break;
+                            case 'BULB': res = incoming.length > 0 ? incoming[0] : false; break;
+                        }
+                        newResults[nodeId] = res;
+                    }
+                    processed.add(nodeId);
+                    return newResults[nodeId];
+                };
 
-  const endWire = (e, toId) => {
-    e.stopPropagation();
-    if (activeWire && activeWire.fromId !== toId) {
-      // Check if connection already exists
-      const exists = connections.some(c => c.fromId === activeWire.fromId && c.toId === toId);
-      if (!exists) {
-        setConnections([...connections, { 
-          id: `conn-${Date.now()}`, 
-          fromId: activeWire.fromId, 
-          toId: toId 
-        }]);
-      }
-    }
-    setActiveWire(null);
-  };
+                nodes.forEach(n => evaluate(n.id));
+                setResults(newResults);
+            }, [nodes, connections]);
 
-  const toggleSwitch = (id) => {
-    setNodes(nodes.map(n => n.id === id ? { ...n, state: !n.state } : n));
-  };
+            useEffect(() => { runSimulation(); }, [nodes, connections, runSimulation]);
 
-  const deleteNode = (id) => {
-    setNodes(nodes.filter(n => n.id !== id));
-    setConnections(connections.filter(c => c.fromId !== id && c.toId !== id));
-  };
-
-  return (
-    <div className="flex flex-col h-screen bg-slate-50 overflow-hidden font-sans">
-      {/* Header */}
-      <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 shrink-0 z-10 shadow-sm">
-        <div className="flex items-center gap-2">
-          <div className="w-10 h-10 bg-indigo-600 rounded-lg flex items-center justify-center text-white shadow-lg">
-            <Zap size={24} fill="currentColor" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold text-slate-800 leading-none">LogicDraw Pro</h1>
-            <p className="text-xs text-slate-500 mt-1 font-medium">Digital Logic Simulator</p>
-          </div>
-        </div>
-        <div className="flex gap-3">
-          <button className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition shadow-sm font-medium">
-            <Download size={18} /> Export
-          </button>
-          <button className="p-2 text-slate-600 hover:bg-slate-100 rounded-full transition">
-            <Settings size={20} />
-          </button>
-        </div>
-      </header>
-
-      <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar Tools */}
-        <aside className="w-72 bg-white border-r border-slate-200 p-6 flex flex-col gap-6 shadow-sm z-10 overflow-y-auto">
-          <section>
-            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">Components</h3>
-            <div className="grid grid-cols-2 gap-3">
-              {Object.entries(GATE_TYPES).map(([type, config]) => (
-                <button
-                  key={type}
-                  onClick={() => addNode(type)}
-                  className="flex flex-col items-center justify-center gap-2 p-3 border-2 border-slate-100 rounded-xl hover:border-indigo-500 hover:bg-indigo-50 transition-all group active:scale-95"
-                >
-                  <div 
-                    className="w-10 h-10 rounded-lg flex items-center justify-center text-white shadow-md group-hover:scale-110 transition-transform"
-                    style={{ backgroundColor: config.color }}
-                  >
-                    <span className="text-[10px] font-black">{config.label}</span>
-                  </div>
-                  <span className="text-sm font-semibold text-slate-700">{type}</span>
-                </button>
-              ))}
-            </div>
-          </section>
-
-          <section className="mt-auto">
-            <div className="bg-slate-900 rounded-xl p-4 text-white">
-              <h4 className="text-sm font-bold mb-2 flex items-center gap-2">
-                <Play size={14} className="text-green-400" fill="currentColor" /> Live Simulation
-              </h4>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                স্বয়ংক্রিয়ভাবে সার্কিটটি এখন লাইভ চলছে। ইনপুট পরিবর্তন করে ফলাফল দেখুন।
-              </p>
-            </div>
-          </section>
-        </aside>
-
-        {/* Canvas Area */}
-        <main 
-          ref={canvasRef}
-          className="flex-1 relative bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] bg-[size:30px_30px] overflow-hidden"
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}
-        >
-          {/* Instructions Overlay */}
-          {nodes.length === 0 && (
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="text-center">
-                <div className="inline-flex p-6 bg-white rounded-full shadow-2xl mb-4 border border-slate-100 opacity-50">
-                  <Plus size={48} className="text-slate-300" />
-                </div>
-                <h2 className="text-2xl font-bold text-slate-400">শুরু করতে বাম পাশের টুলস থেকে গেট যোগ করুন</h2>
-              </div>
-            </div>
-          )}
-
-          {/* Connections SVG Layer */}
-          <svg className="absolute inset-0 w-full h-full pointer-events-none">
-            {connections.map(conn => {
-              const fromNode = nodes.find(n => n.id === conn.fromId);
-              const toNode = nodes.find(n => n.id === conn.toId);
-              if (!fromNode || !toNode) return null;
-              
-              const isActive = simulationResults[fromNode.id];
-              const d = `M ${fromNode.x + 80} ${fromNode.y + 30} C ${fromNode.x + 130} ${fromNode.y + 30}, ${toNode.x - 50} ${toNode.y + 30}, ${toNode.x} ${toNode.y + 30}`;
-              
-              return (
-                <path
-                  key={conn.id}
-                  d={d}
-                  fill="none"
-                  stroke={isActive ? '#3b82f6' : '#94a3b8'}
-                  strokeWidth={isActive ? 4 : 2}
-                  className="transition-all duration-300"
-                  strokeLinecap="round"
-                />
-              );
-            })}
-            {activeWire && (
-              <path
-                d={`M ${activeWire.startX} ${activeWire.startY} C ${activeWire.startX + 50} ${activeWire.startY}, ${activeWire.endX - 50} ${activeWire.endY}, ${activeWire.endX} ${activeWire.endY}`}
-                fill="none"
-                stroke="#6366f1"
-                strokeWidth="2"
-                strokeDasharray="4"
-              />
-            )}
-          </svg>
-
-          {/* Nodes Layer */}
-          {nodes.map(node => (
-            <div
-              key={node.id}
-              style={{ left: node.x, top: node.y }}
-              onMouseDown={(e) => handleMouseDown(e, node)}
-              className={`absolute w-32 h-16 bg-white border-2 rounded-xl shadow-lg flex items-center justify-center cursor-move select-none transition-shadow group
-                ${draggingNode === node.id ? 'shadow-2xl ring-2 ring-indigo-500 ring-opacity-50' : 'hover:shadow-xl'}
-                ${simulationResults[node.id] ? 'border-indigo-400' : 'border-slate-200'}`}
-            >
-              {/* Input Port (Left) */}
-              {GATE_TYPES[node.type].inputs > 0 && (
-                <div 
-                  data-port="input"
-                  onMouseUp={(e) => endWire(e, node.id)}
-                  className="absolute -left-2 w-4 h-4 bg-slate-300 rounded-full border-2 border-white hover:bg-indigo-500 transition-colors cursor-crosshair shadow-sm"
-                />
-              )}
-
-              {/* Content */}
-              <div className="flex flex-col items-center">
-                <span className="text-[10px] uppercase font-bold text-slate-400 tracking-tighter leading-none mb-1">
-                  {node.type}
-                </span>
+            // Auto Generator Logic
+            const generateCircuit = () => {
+                let newNodes = [];
+                let newConnections = [];
                 
-                {node.type === 'SWITCH' ? (
-                  <button 
-                    onClick={() => toggleSwitch(node.id)}
-                    className={`px-3 py-1 rounded-full text-xs font-bold transition-all ${node.state ? 'bg-indigo-600 text-white shadow-inner' : 'bg-slate-100 text-slate-500'}`}
-                  >
-                    {node.state ? 'ON' : 'OFF'}
-                  </button>
-                ) : node.type === 'BULB' ? (
-                  <div className={`w-6 h-6 rounded-full flex items-center justify-center shadow-lg transition-all duration-300 ${simulationResults[node.id] ? 'bg-yellow-400 animate-pulse ring-4 ring-yellow-100' : 'bg-slate-200 opacity-50'}`}>
-                    <Zap size={14} className={simulationResults[node.id] ? 'text-white' : 'text-slate-400'} fill="currentColor" />
-                  </div>
-                ) : (
-                  <span className="text-lg font-black text-slate-700">{GATE_TYPES[node.type].label}</span>
-                )}
-              </div>
+                // Simple parser for demonstration: Handles A.B + !A style
+                // Step 1: Create Switches for A and B
+                const switchA = { id: 'sw-A', type: 'SWITCH', label: 'A', x: 50, y: 100, state: false };
+                const switchB = { id: 'sw-B', type: 'SWITCH', label: 'B', x: 50, y: 200, state: false };
+                newNodes.push(switchA, switchB);
 
-              {/* Output Port (Right) */}
-              <div 
-                data-port="output"
-                onMouseDown={(e) => startWire(e, node.id)}
-                className={`absolute -right-2 w-4 h-4 rounded-full border-2 border-white hover:bg-indigo-500 transition-colors cursor-crosshair shadow-sm
-                  ${simulationResults[node.id] ? 'bg-indigo-500' : 'bg-slate-400'}`}
-              />
+                // Logic based on equation string (Naive implementation)
+                if (equation.includes('!A')) {
+                    const notGate = { id: 'not-1', type: 'NOT', x: 200, y: 100 };
+                    newNodes.push(notGate);
+                    newConnections.push({ id: 'c1', fromId: 'sw-A', toId: 'not-1' });
+                }
 
-              {/* Delete Button */}
-              <button 
-                onClick={() => deleteNode(node.id)}
-                className="absolute -top-2 -right-2 w-6 h-6 bg-white rounded-full flex items-center justify-center text-slate-300 hover:text-red-500 shadow-md border border-slate-100 opacity-0 group-hover:opacity-100 transition-all scale-75 group-hover:scale-100"
-              >
-                <Trash2 size={12} />
-              </button>
-            </div>
-          ))}
-        </main>
-      </div>
+                if (equation.includes('A.B') || equation.includes('A*B')) {
+                    const andGate = { id: 'and-1', type: 'AND', x: 200, y: 200 };
+                    newNodes.push(andGate);
+                    newConnections.push({ id: 'c2', fromId: 'sw-A', toId: 'and-1' });
+                    newConnections.push({ id: 'c3', fromId: 'sw-B', toId: 'and-1' });
+                }
 
-      {/* Footer Info */}
-      <footer className="h-10 bg-white border-t border-slate-200 px-6 flex items-center justify-between text-[11px] text-slate-500 font-medium">
-        <div className="flex gap-4">
-          <span>Nodes: {nodes.length}</span>
-          <span>Connections: {connections.length}</span>
-        </div>
-        <div className="flex items-center gap-1">
-          <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-          Simulation Engine Active
-        </div>
-      </footer>
-    </div>
-  );
-};
+                if (equation.includes('+')) {
+                    const orGate = { id: 'or-1', type: 'OR', x: 350, y: 150 };
+                    newNodes.push(orGate);
+                    // Connect inputs to OR
+                    if (newNodes.find(n => n.id === 'not-1')) newConnections.push({ id: 'c4', fromId: 'not-1', toId: 'or-1' });
+                    if (newNodes.find(n => n.id === 'and-1')) newConnections.push({ id: 'c5', fromId: 'and-1', toId: 'or-1' });
+                }
 
-export default App;
+                const bulb = { id: 'bulb-1', type: 'BULB', x: 500, y: 150 };
+                newNodes.push(bulb);
+                const lastGate = newNodes[newNodes.length - 2];
+                newConnections.push({ id: 'c-final', fromId: lastGate.id, toId: 'bulb-1' });
+
+                setNodes(newNodes);
+                setConnections(newConnections);
+            };
+
+            return (
+                <div className="flex flex-col h-screen text-slate-800 font-sans">
+                    <header className="h-20 bg-white border-b flex items-center justify-between px-8 shadow-sm z-20">
+                        <div className="flex items-center gap-4">
+                            <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white font-bold shadow-lg">Σ</div>
+                            <div>
+                                <h1 className="font-black text-lg">LOGIC SOLVER</h1>
+                                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Auto Circuit Generator</p>
+                            </div>
+                        </div>
+
+                        <div className="flex flex-1 max-w-xl mx-10 gap-2">
+                            <input 
+                                value={equation}
+                                onChange={(e) => setEquation(e.target.value)}
+                                className="flex-1 px-4 py-2 bg-slate-100 border-2 border-transparent focus:border-blue-500 rounded-lg outline-none font-mono text-sm"
+                                placeholder="উদা: A.B + !A"
+                            />
+                            <button 
+                                onClick={generateCircuit}
+                                className="px-6 py-2 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 transition shadow-md whitespace-nowrap"
+                            >
+                                ড্র করো
+                            </button>
+                        </div>
+                    </header>
+
+                    <main className="flex-1 relative canvas-grid bg-white overflow-hidden" ref={canvasRef}>
+                        <svg className="absolute inset-0 w-full h-full pointer-events-none">
+                            {connections.map(c => {
+                                const fn = nodes.find(n => n.id === c.fromId);
+                                const tn = nodes.find(n => n.id === c.toId);
+                                if (!fn || !tn) return null;
+                                const active = results[fn.id];
+                                return (
+                                    <path 
+                                        key={c.id} 
+                                        d={`M ${fn.x + 100} ${fn.y + 40} C ${fn.x + 130} ${fn.y + 40}, ${tn.x - 30} ${tn.y + 40}, ${tn.x} ${tn.y + 40}`} 
+                                        fill="none" 
+                                        stroke={active ? '#3b82f6' : '#e2e8f0'} 
+                                        strokeWidth={active ? 4 : 2}
+                                        className={active ? 'wire-active' : ''}
+                                    />
+                                );
+                            })}
+                        </svg>
+
+                        {nodes.map(node => (
+                            <div 
+                                key={node.id} 
+                                style={{ left: node.x, top: node.y }}
+                                className={`gate-node absolute w-28 h-20 bg-white border-2 rounded-2xl shadow-sm flex flex-col items-center justify-center ${results[node.id] ? 'border-blue-500 ring-4 ring-blue-50' : 'border-slate-100'}`}
+                            >
+                                <div className="flex flex-col items-center">
+                                    {node.type === 'SWITCH' ? (
+                                        <button 
+                                            onClick={() => setNodes(nodes.map(n => n.id === node.id ? {...n, state: !n.state} : n))}
+                                            className={`w-12 h-6 rounded-full transition-all relative ${node.state ? 'bg-blue-600' : 'bg-slate-300'}`}
+                                        >
+                                            <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${node.state ? 'left-7' : 'left-1'}`}></div>
+                                        </button>
+                                    ) : node.type === 'BULB' ? (
+                                        <div className={`w-8 h-8 rounded-full border-4 ${results[node.id] ? 'bg-yellow-400 border-yellow-500 shadow-xl' : 'bg-slate-100 border-slate-200'}`} />
+                                    ) : (
+                                        <svg viewBox="0 0 50 50" className="h-10">
+                                            <path d={GATE_CONFIGS[node.type].d} fill="none" stroke={GATE_CONFIGS[node.type].color} strokeWidth="3" />
+                                        </svg>
+                                    )}
+                                    <span className="text-[10px] font-black uppercase text-slate-400 mt-1">{node.label || node.type}</span>
+                                </div>
+                            </div>
+                        ))}
+                    </main>
+
+                    <footer className="h-10 bg-slate-900 text-white flex items-center px-8 text-xs font-bold gap-6">
+                        <span className="text-blue-400">ব্যবহৃত চিহ্ন:</span>
+                        <span>( . ) = AND</span>
+                        <span>( + ) = OR</span>
+                        <span>( ! ) = NOT</span>
+                        <div className="ml-auto opacity-50 italic uppercase tracking-tighter">Automatic Logic Solving Engine v1.0</div>
+                    </footer>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
