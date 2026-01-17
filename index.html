@@ -45,10 +45,13 @@
             const [results, setResults] = useState({});
             const [equation, setEquation] = useState("A.B + C");
             const [isLoading, setIsLoading] = useState(false);
+            const [errorMsg, setErrorMsg] = useState("");
             const canvasRef = useRef(null);
-            const apiKey = ""; // API Key environment theke asbe
+            
+            // NOTE: Vercel-e host korle oboshshoi nijer API Key boshabun.
+            // Empty thakle runtime environment theke neyar chesta korbe.
+            const apiKey = ""; 
 
-            // Simulation core logic
             const runSimulation = useCallback(() => {
                 const newResults = {};
                 const processed = new Set();
@@ -84,20 +87,19 @@
 
             useEffect(() => { runSimulation(); }, [nodes, connections, runSimulation]);
 
-            // AI Circuit Generation using Gemini API
             const generateWithAI = async () => {
                 if (!equation.trim()) return;
                 setIsLoading(true);
+                setErrorMsg("");
 
                 const systemPrompt = `You are a Digital Logic Circuit Architect. 
                 Convert the user's boolean expression into a JSON object for a circuit simulator.
                 Available nodes: AND, OR, NOT, SWITCH, BULB.
                 Rules:
-                1. Create SWITCH nodes for inputs like A, B, C etc. (x: 50, y: variable).
-                2. Create intermediate logic gates (AND, OR, NOT) and connect them.
-                3. Finally connect to a single BULB node (x: 700, y: 300).
-                4. Output MUST be valid JSON only with properties: nodes (id, type, label, x, y) and connections (id, fromId, toId).
-                5. Use x/y coordinates to make the circuit look clear and readable (left to right).`;
+                1. Create SWITCH nodes for inputs (A, B, C etc).
+                2. Use intermediate gates.
+                3. Connect to a single BULB.
+                4. Output valid JSON only with 'nodes' and 'connections'.`;
 
                 const userPrompt = `Create a circuit for: ${equation}`;
 
@@ -113,13 +115,16 @@
                             })
                         });
 
-                        if (!response.ok) throw new Error('API Error');
+                        if (!response.ok) {
+                            if (response.status === 400) throw new Error("API Key thik bhabe set kora hoyni.");
+                            throw new Error('Network response thik chilo na.');
+                        }
+
                         const data = await response.json();
                         const rawJson = data.candidates?.[0]?.content?.parts?.[0]?.text;
                         const parsed = JSON.parse(rawJson);
 
                         if (parsed.nodes && parsed.connections) {
-                            // Ensure switches have state
                             const nodesWithState = parsed.nodes.map(n => ({
                                 ...n,
                                 state: n.type === 'SWITCH' ? false : undefined
@@ -128,11 +133,11 @@
                             setConnections(parsed.connections);
                         }
                     } catch (err) {
-                        if (retries < 5) {
+                        if (retries < 3) {
                             const delay = Math.pow(2, retries) * 1000;
                             setTimeout(() => fetchCircuit(retries + 1), delay);
                         } else {
-                            console.error("Failed to generate circuit after retries");
+                            setErrorMsg("AI circuit tairi korte parchena. API Key check korun.");
                         }
                     } finally {
                         setIsLoading(false);
@@ -180,6 +185,12 @@
                     <main className="flex-1 relative canvas-grid bg-white overflow-hidden" ref={canvasRef}>
                         {isLoading && <div className="absolute inset-0 z-30 loading-shimmer opacity-20 pointer-events-none"></div>}
                         
+                        {errorMsg && (
+                            <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-50 text-red-600 px-4 py-2 rounded-lg border border-red-100 font-bold text-sm z-40">
+                                {errorMsg}
+                            </div>
+                        )}
+
                         <svg className="absolute inset-0 w-full h-full pointer-events-none">
                             <defs>
                                 <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="0" refY="3.5" orient="auto">
